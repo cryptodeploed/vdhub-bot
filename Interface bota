@@ -1,1 +1,229 @@
-wffwdxsdc
+import telebot
+from telebot import types
+import gspread
+import requests
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timedelta
+
+# === НАЛАШТУВАННЯ ===
+TOKEN = 'my token '
+MANAGER_USERNAME = "@vdhub_manager"
+MANAGER_CHAT_ID = '7306000384'
+USDT_ADDRESS = "TSWWgmHL9XqaqPYSo8rWv47SGQ6go8GCfq"
+DISCORD_INVITE = "https://discord.gg/yyNNQpg23g"
+
+bot = telebot.TeleBot(TOKEN)
+
+# === Google Sheets ===
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/spreadsheets",
+         "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("vdhub-credentials.json", scope)
+client = gspread.authorize(creds)
+sheet = client.open("VDHUB_Users").sheet1
+
+user_data = {}
+
+# === СТАРТ ===
+@bot.message_handler(commands=['start'])
+def start(message):
+    chat_id = message.chat.id
+    user_data[chat_id] = {}
+    bot.send_message(chat_id, "Привіт! Вас вітає бот *VDHUB*. Давайте створимо ваш особистий кабінет.", parse_mode='Markdown')
+    bot.send_message(chat_id, "Вкажіть ваше ім'я:")
+    bot.register_next_step_handler(message, get_name)
+
+def get_name(message):
+    chat_id = message.chat.id
+    user_data[chat_id]['name'] = message.text
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(types.KeyboardButton("Надати номер телефону", request_contact=True))
+    bot.send_message(chat_id, "Надайте свій номер телефону:", reply_markup=markup)
+
+@bot.message_handler(content_types=['contact'])
+def get_phone(message):
+    chat_id = message.chat.id
+    user_data[chat_id]['phone'] = message.contact.phone_number
+    bot.send_message(chat_id, "Введіть свою пошту (лише @gmail.com):")
+    bot.register_next_step_handler(message, get_email)
+
+def get_email(message):
+    chat_id = message.chat.id
+    email = message.text
+    if email.endswith("@gmail.com"):
+        user_data[chat_id]['email'] = email
+        bot.send_message(chat_id, "Введіть свій Discord username:")
+        bot.register_next_step_handler(message, get_discord)
+    else:
+        bot.send_message(chat_id, "Невірний формат пошти. Введіть ще раз:")
+        bot.register_next_step_handler(message, get_email)
+
+def get_discord(message):
+    chat_id = message.chat.id
+    user_data[chat_id]['discord'] = message.text
+    user_data[chat_id]['telegram'] = message.from_user.username or "None"
+    user_data[chat_id]['register_date'] = datetime.now().strftime("%d.%m.%Y %H:%M")
+    show_main_menu(chat_id)
+
+def show_main_menu(chat_id):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("ОБРАТИ ТАРИФ🛍")
+    markup.add("👤 Особистий кабінет", "❓ Про продукт")
+    markup.add("🌐 Наші ресурси", "🆘 Допомога")
+    bot.send_message(chat_id, "Головне меню:", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text == "❓ Про продукт")
+def about_product(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("🎓 Education", callback_data="education"),
+        types.InlineKeyboardButton("👥 Community", callback_data="community")
+    )
+    markup.add(types.InlineKeyboardButton("❌ Назад", callback_data="close"))
+    bot.send_message(message.chat.id, "Оберіть напрям:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda c: c.data in ["education", "community", "close"])
+def handle_product_choice(call):
+    chat_id = call.message.chat.id
+    if call.data == "education":
+        bot.send_message(chat_id, "🎓 Education — скоро зʼявиться. Очікуйте!")
+    elif call.data == "community":
+        text = (
+            "*VDHUB COMMUNITY — all-in-one екосистема для криптанів*\n\n"
+            "*Отримай повний доступ до закритого Discord-сервера:*\n"
+            "• Trading Zone — аналітика по крипті, форексу, чати\n"
+            "• Degen Zone — high-risk, арбітраж, меми, снайпінг\n"
+            "• Research & Testnet — тестнети, фармінг, сейли\n"
+            "• NFT Zone — аналітика, тренди, проєкти\n"
+            "• Nodes & Validators — ноди, чати, гіди\n"
+            "• Knowledge Hub — гайди, психологія, записи зідзвонів\n"
+            "• Спільні зустрічі — не лише робота, а й відпочинок\n\n"
+            "*Все це — в одній підписці. Ти обираєш термін — ми середовище*"
+        )
+        bot.send_message(chat_id, text, parse_mode="Markdown")
+        choose_plan(call.message)
+    elif call.data == "close":
+        bot.delete_message(chat_id, call.message.message_id)
+
+def choose_plan(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("30 днів — 70$", callback_data="plan_30"),
+        types.InlineKeyboardButton("90 днів — 200$", callback_data="plan_90"),
+        types.InlineKeyboardButton("180 днів — 400$", callback_data="plan_180")
+    )
+    bot.send_message(message.chat.id, "⏳ Оберіть термін підписки:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("plan_"))
+def choose_payment(call):
+    chat_id = call.message.chat.id
+    plan_map = {
+        "plan_30": (30, 70),
+        "plan_90": (90, 200),
+        "plan_180": (180, 400)
+    }
+    days, price = plan_map[call.data]
+    user_data[chat_id]["plan"] = f"{days} днів"
+    user_data[chat_id]["amount"] = price
+    user_data[chat_id]["end_date"] = (datetime.now() + timedelta(days=days)).strftime("%d.%m.%Y")
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("💸 Оплатити криптою", callback_data="pay_crypto"),
+        types.InlineKeyboardButton("🏦 Оплатити фіатом", callback_data="pay_fiat")
+    )
+    bot.send_message(chat_id, f"Ви обрали {days} днів — {price}$\nОберіть спосіб оплати:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda c: c.data == "pay_crypto")
+def crypto_payment(call):
+    chat_id = call.message.chat.id
+    amount = user_data[chat_id]["amount"]
+    plan = user_data[chat_id]["plan"]
+    bot.send_message(chat_id, f"""
+💸 *Оплата криптою*
+
+Адреса: `{USDT_ADDRESS}`
+Мережа: TRC20
+Сума: {amount} USDT
+Підписка: {plan}
+
+Після оплати, будь ласка, надішліть *хеш транзакції*.
+""", parse_mode="Markdown")
+    bot.register_next_step_handler(call.message, check_tx_hash)
+
+def check_tx_hash(message):
+    chat_id = message.chat.id
+    tx_hash = message.text.strip()
+    url = f"https://apilist.tronscanapi.com/api/transaction-info?hash={tx_hash}"
+
+    try:
+        r = requests.get(url).json()
+        if r.get("contractType") == 1 and r["toAddress"] == USDT_ADDRESS:
+            amount = int(r.get("amount", 0)) / 1_000_000
+            if amount >= user_data[chat_id]["amount"]:
+                user_data[chat_id]["paid"] = datetime.now().strftime("%d.%m.%Y")
+                sheet.append_row([
+                    user_data[chat_id]["name"],
+                    user_data[chat_id]["phone"],
+                    user_data[chat_id]["email"],
+                    user_data[chat_id]["discord"],
+                    user_data[chat_id]["telegram"],
+                    user_data[chat_id]["register_date"],
+                    user_data[chat_id]["paid"],
+                    user_data[chat_id]["end_date"]
+                ])
+                bot.send_message(chat_id, "✅ Оплату підтверджено!")
+                bot.send_message(chat_id, f"Ось ваш інвайт: {DISCORD_INVITE}")
+            else:
+                bot.send_message(chat_id, f"❌ Оплата недостатня. Виявлено: {amount} USDT")
+        else:
+            bot.send_message(chat_id, "❌ Хеш не дійсний або не містить потрібну транзакцію.")
+    except Exception as e:
+        bot.send_message(chat_id, "⚠️ Не вдалося перевірити транзакцію. Спробуйте ще раз.")
+
+@bot.callback_query_handler(func=lambda c: c.data == "pay_fiat")
+def fiat_payment(call):
+    chat_id = call.message.chat.id
+    user = user_data[chat_id]
+    bot.send_message(chat_id, f"Ваш запит передано менеджеру. Очікуйте: {MANAGER_USERNAME}")
+    text = f"""Нова заявка:
+Імʼя: {user['name']}
+Telegram: @{user['telegram']}
+Email: {user['email']}
+Discord: {user['discord']}
+План: {user['plan']}
+Сума: {user['amount']}$
+"""
+    bot.send_message(MANAGER_CHAT_ID, text)
+
+@bot.message_handler(func=lambda m: m.text == "👤 Особистий кабінет")
+def profile(message):
+    chat_id = message.chat.id
+    user = user_data.get(chat_id, {})
+    if user:
+        text = f"""
+👤 Ваш профіль:
+Ім’я: {user.get('name')}
+Telegram: @{user.get('telegram')}
+Email: {user.get('email')}
+Discord: {user.get('discord')}
+Дата реєстрації: {user.get('register_date')}
+"""
+        bot.send_message(chat_id, text)
+    else:
+        bot.send_message(chat_id, "Вас ще не зареєстровано. Натисніть /start")
+
+@bot.message_handler(func=lambda m: m.text == "🌐 Наші ресурси")
+def resources(message):
+    bot.send_message(message.chat.id, """
+Instagram: https://www.instagram.com/vdhub.crypto/
+Канал: https://t.me/vdhub_crypto
+Чат: https://t.me/+xyh5ZckZMWtiNGZk
+Сайт: https://www.vdhubcommunity.com/
+""")
+
+@bot.message_handler(func=lambda m: m.text == "🆘 Допомога")
+def help_info(message):
+    bot.send_message(message.chat.id, f"Якщо виникли питання — звертайтесь: {MANAGER_USERNAME}")
+
+# === Запуск ===
+bot.infinity_polling()
