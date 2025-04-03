@@ -1,1 +1,155 @@
+import telebot
+from telebot import types
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 
+# === Налаштування ===
+# Замініть YOUR_BOT_TOKEN на свій токен від BotFather
+bot = telebot.TeleBot("gggg")
+
+# Підключення до Google Таблиці
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("vdhub_key.json", scope)
+client = gspread.authorize(creds)
+sheet = client.open("VDHUB_Users").worksheet("Аркуш1")
+
+# Тимчасове зберігання даних користувача
+user_data = {}
+
+# === Реєстрація (Етап 1 & 2) ===
+@bot.message_handler(commands=["start"])
+def start_handler(message):
+    user_data[message.chat.id] = {}
+    bot.send_message(message.chat.id, "Вітаю! Давай розпочнемо реєстрацію.\nВведи своє ім'я:")
+    bot.register_next_step_handler(message, get_name)
+
+def get_name(message):
+    user_data[message.chat.id]["name"] = message.text.strip()
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    button = types.KeyboardButton("Надати номер телефону", request_contact=True)
+    markup.add(button)
+    bot.send_message(message.chat.id, "Надішли, будь ласка, свій номер телефону:", reply_markup=markup)
+
+@bot.message_handler(content_types=["contact"])
+def get_contact(message):
+    user_data[message.chat.id]["phone"] = message.contact.phone_number
+    bot.send_message(message.chat.id, "Введи свій Email (має бути @gmail.com):", reply_markup=types.ReplyKeyboardRemove())
+    bot.register_next_step_handler(message, get_email)
+
+def get_email(message):
+    email = message.text.strip()
+    if "@gmail.com" not in email:
+        bot.send_message(message.chat.id, "Невірний email. Має бути @gmail.com. Спробуй ще раз:")
+        bot.register_next_step_handler(message, get_email)
+        return
+    user_data[message.chat.id]["email"] = email
+    bot.send_message(message.chat.id, "Введи свій Discord username:")
+    bot.register_next_step_handler(message, get_discord)
+
+def get_discord(message):
+    user_data[message.chat.id]["discord"] = message.text.strip()
+    telegram_username = message.from_user.username or "не вказано"
+    user_data[message.chat.id]["tg_username"] = telegram_username
+    user_data[message.chat.id]["tg_id"] = str(message.chat.id)
+    user_data[message.chat.id]["reg_date"] = datetime.now().strftime("%d.%m.%Y %H:%M")
+    # Запис даних у Google Таблицю (порядок: Ім'я, Телефон, Email, Discord, Telegram Username, Telegram ID, Дата)
+    sheet.append_row([
+        user_data[message.chat.id]["name"],
+        user_data[message.chat.id]["phone"],
+        user_data[message.chat.id]["email"],
+        user_data[message.chat.id]["discord"],
+        user_data[message.chat.id]["tg_username"],
+        user_data[message.chat.id]["tg_id"],
+        user_data[message.chat.id]["reg_date"]
+    ])
+    bot.send_message(message.chat.id, "Реєстрацію завершено!")
+    show_main_menu(message)
+
+# === Головне меню (Етап 3) ===
+def show_main_menu(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("🎁 ОБРАТИ ТАРИФ", "👤 Особистий кабінет")
+    markup.row("❓ Про продукт", "🌐 Наші ресурси", "🆘 Допомога")
+    bot.send_message(message.chat.id, "Головне меню VDHUB", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: True)
+def handle_menu_buttons(message):
+    if message.text == "❓ Про продукт":
+        show_about_section(message)
+    elif message.text == "🎁 ОБРАТИ ТАРИФ":
+        show_section(message, "ОБРАТИ ТАРИФ", "Тут буде вибір тарифу.", "tariff.png")
+    elif message.text == "👤 Особистий кабінет":
+        show_section(message, "ОСОБИСТИЙ КАБІНЕТ", "Особистий кабінет...", "cabinet.png")
+    elif message.text == "🌐 Наші ресурси":
+        show_section(message, "НАШІ РЕСУРСИ", "Наші ресурси тут...", "resources.png")
+    elif message.text == "🆘 Допомога":
+        show_section(message, "ДОПОМОГА", "Звернись до @vdhub_manager", "help.png")
+    else:
+        # ігнорувати не розпізнані повідомлення
+        pass
+
+# Функція для відправлення секції (банер + текст в одному повідомленні, Shark-style)
+def show_section(message, title, text, image_path):
+    menu = types.InlineKeyboardMarkup()
+    menu.add(types.InlineKeyboardButton("❌ Закрити", callback_data="close"))
+    caption = f"<b>{title}</b>\n\n{text}"
+    with open(image_path, "rb") as photo:
+        bot.send_photo(message.chat.id, photo=photo, caption=caption, parse_mode="HTML", reply_markup=menu)
+
+# === "Про продукт" (Етап 3.2, Shark-style) ===
+def show_about_section(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.row(
+        types.InlineKeyboardButton("🎓 Education", callback_data="about_education"),
+        types.InlineKeyboardButton("👥 Community", callback_data="about_community")
+    )
+    markup.add(types.InlineKeyboardButton("❌ Закрити", callback_data="close"))
+    with open("about.png", "rb") as photo:
+        bot.send_photo(message.chat.id, photo=photo, caption="Оберіть напрямок:", reply_markup=markup)
+
+def show_about_subsection(call, title, text, image_path=None):
+    menu = types.InlineKeyboardMarkup()
+    menu.add(types.InlineKeyboardButton("🔙 Назад", callback_data="about_back"))
+    menu.add(types.InlineKeyboardButton("❌ Закрити", callback_data="close"))
+    caption = f"<b>{title}</b>\n\n{text}"
+    if image_path:
+        with open(image_path, "rb") as photo:
+            bot.send_photo(call.message.chat.id, photo=photo, caption=caption, parse_mode="HTML", reply_markup=menu)
+    else:
+        bot.send_message(call.message.chat.id, caption, parse_mode="HTML", reply_markup=menu)
+
+# Обробка inline кнопок (callback)
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    if call.data == "close":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    elif call.data == "about_back":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        show_about_section(call.message)
+    elif call.data == "about_community":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        show_about_subsection(
+            call,
+            "Community",
+            "VDHUB COMMUNITY — all-in-one екосистема для криптанів\n"
+            "Отримай повний доступ до закритого Discord-сервера, що включає:\n\n"
+            "• Trading Zone — аналітика (крипта, форекс), приватні чати\n"
+            "• Degen Zone — high-risk, парсери, снайпінг, меми\n"
+            "• Research & Testnet — тестнети, фарм, аірдропи, амбасадорки\n"
+            "• NFT Zone — тренди, аналітика\n"
+            "• Nodes & Validators — актуальні ноди\n"
+            "• Knowledge Hub — психологія, гайди, записи, шоп\n\n"
+            "Регулярні зідзвони. Одна підписка — без обмежень, без води.\nТи обираєш термін — ми даємо середовище.",
+            "community.png"
+        )
+    elif call.data == "about_education":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        show_about_subsection(
+            call,
+            "Education",
+            "На даний момент недоступно — потік сформовано."
+        )
+
+# Запуск бота
+bot.infinity_polling()
